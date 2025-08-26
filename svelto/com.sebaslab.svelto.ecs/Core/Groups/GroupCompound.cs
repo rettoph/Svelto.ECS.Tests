@@ -1,8 +1,10 @@
+using Svelto.DataStructures;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
-using Svelto.DataStructures;
 
 namespace Svelto.ECS
 {
@@ -24,129 +26,161 @@ namespace Svelto.ECS
 
     interface ITouchedByReflection { }
 
-    public abstract class GroupCompound<G1, G2, G3, G4>: ITouchedByReflection
+    internal sealed class GroupCompound
+    {
+        private readonly int _Id;
+        private readonly string _Name;
+        private readonly Type[] _GroupTagTypes;
+        private readonly FasterList<ExclusiveGroupStruct> _Groups;
+        private readonly HashSet<ExclusiveGroupStruct> _GroupsHashSet;
+
+        public FasterReadOnlyList<ExclusiveGroupStruct> Groups
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => new(this._Groups);
+        }
+
+        public ExclusiveBuildGroup BuildGroup
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => new(this._Groups[0], 1);
+        }
+
+        private GroupCompound(int id, string name, Type[] groupTagTypes, ExclusiveGroupBitmask buildGroupBitmask)
+        {
+            this._Id = id;
+            this._Name = name;
+            this._GroupTagTypes = groupTagTypes;
+            this._Groups = new FasterList<ExclusiveGroupStruct>(1);
+            this._GroupsHashSet = new HashSet<ExclusiveGroupStruct>();
+
+            var group = new ExclusiveGroup(buildGroupBitmask);
+            this.Add(group);
+            this.PopulateExistingGroups();
+
+#if DEBUG
+            var groupName =
+                    $"Compound: {this._Name} ID {group.id}";
+            GroupNamesMap.idToName[group] = groupName;
+#endif
+
+            //The hashname is independent from the actual group ID. this is fundamental because it is want
+            //guarantees the hash to be the same across different machines
+            GroupHashMap.RegisterGroup(group, this._Name);
+        }
+
+        internal void Add(ExclusiveGroupStruct group)
+        {
+#if DEBUG && !PROFILE_SVELTO
+            for (var i = 0; i < _Groups.count; ++i)
+                if (_Groups[i] == group)
+                    throw new System.Exception("this test must be transformed in unit test");
+#endif
+
+            this._Groups.Add(group);
+            this._GroupsHashSet.Add(group);
+        }
+
+        internal bool Contains(ExclusiveGroupStruct group)
+        {
+            return this._GroupsHashSet.Contains(group);
+        }
+
+        private void PopulateExistingGroups()
+        {
+            // Since GroupCompunds are no longer hotloaded statically we need to ensure 
+            // all existing groups get defined (and add the new group to all existing definitions)
+            // This involves adding the new group into lower GroupCompounds
+            // and adding existing groups from higher GroupCompounds
+
+            foreach (var (id, existingGroupCompound) in _GroupCompounds)
+            { // Iterate through all existing GroupCompounds
+                if (existingGroupCompound == this)
+                { // Ignore self
+                    continue;
+                }
+
+                if (this.ContainsGroupTagTypes(existingGroupCompound._GroupTagTypes) == true)
+                { // If all GroupTags within the existingGroupCompound exist in the current groupCompound...
+                  // This selects GroupCompound<XYZ> when creating GroupCompound<ABC, XYZ> but not the other way around
+                  // We want to add the new group into the existing groupCompound
+                    existingGroupCompound.Add(this.BuildGroup);
+                }
+
+                if (existingGroupCompound.ContainsGroupTagTypes(this._GroupTagTypes) == true)
+                { // If all GroupTags within the current groupCompount exist in the existingGroupCompound...
+                  // This selects GroupCompound<ABC, XYZ> when creating GroupCompound<XYZ> but not the other way around
+                  // We want to add the existing group into the current groupCompound
+                    this.Add(existingGroupCompound.BuildGroup);
+                }
+            }
+        }
+
+        private bool ContainsGroupTagTypes(params Type[] groupTagTypes)
+        {
+            if (groupTagTypes.Length > this._GroupTagTypes.Length)
+            {
+                return false;
+            }
+
+            foreach (Type groupTagType in groupTagTypes)
+            {
+                if (this._GroupTagTypes.Contains(groupTagType) == false)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static readonly ConcurrentDictionary<int, GroupCompound> _GroupCompounds = new ConcurrentDictionary<int, GroupCompound>();
+        internal static GroupCompound GetOrCreateGroupCompoundByGroupTagTypes(Type[] groupTagTypes, ExclusiveGroupBitmask buildGroupBitmask)
+        {
+            // Sort the tag types
+            Type[] groupTagTypesSorted = groupTagTypes.OrderBy(x => x.AssemblyQualifiedName).ThenBy(x => x.GetHashCode()).ToArray();
+
+            // Generate unique id from sorted types
+            int id = 0;
+            for (var i = 0; i < groupTagTypesSorted.Length; i++)
+            {
+                id = HashCode.Combine(groupTagTypesSorted[i], id);
+            }
+
+            if (_GroupCompounds.TryGetValue(id, out GroupCompound groupCompound) == true)
+            { // An instance already exists
+                return groupCompound;
+            }
+
+            // Need to create and store a new instance
+            string name = groupTagTypesSorted.Select((x, _) => x.FullName).Aggregate((s1, s2) => $"{s1}-{s2}");
+            groupCompound = new GroupCompound(id, name, groupTagTypesSorted, buildGroupBitmask);
+            _GroupCompounds.TryAdd(id, groupCompound);
+
+            return groupCompound;
+        }
+    }
+
+    public abstract class GroupCompound<G1, G2, G3, G4> : ITouchedByReflection
             where G1 : GroupTag<G1>
             where G2 : GroupTag<G2>
             where G3 : GroupTag<G3>
             where G4 : GroupTag<G4>
     {
-        static GroupCompound()
-        {
-            /// c# Static constructors are guaranteed to be thread safe and not called more than once
-            if (Interlocked.CompareExchange(ref isInitialised, 1, 0) != 0)
-                throw new Exception("GroupCompound static constructor called twice - impossible");
-            
-            if (GroupCompoundInitializer.skipStaticCompoundConstructorsWith4Tags.Value == false)
-            {
-                var group = new ExclusiveGroup(GroupTag<G1>.bitmask | GroupTag<G2>.bitmask | GroupTag<G3>.bitmask | GroupTag<G4>.bitmask);
-
-                _Groups = new FasterList<ExclusiveGroupStruct>(1);
-                _Groups.Add(group);
-#if DEBUG
-                var name =
-                        $"Compound: {typeof(G1).Name}-{typeof(G2).Name}-{typeof(G3).Name}-{typeof(G4).Name} ID {(uint)group.id}";
-                GroupNamesMap.idToName[group] = name;
-#endif
-                //The hashname is independent from the actual group ID. this is fundamental because it is want
-                //guarantees the hash to be the same across different machines
-                GroupHashMap.RegisterGroup(group, typeof(GroupCompound<G1, G2, G3, G4>).FullName);
-
-                //ToArrayFast is theoretically not correct, but since multiple 0s are ignored and we don't care if we 
-                //add one, we avoid an allocation
-                var exclusiveGroupStructs = _Groups.ToArrayFast(out var count);
-                _GroupsHashSet = new HashSet<ExclusiveGroupStruct>(count);
-                for (var index = 0; index < count; ++index)
-                {
-                    var exclusiveGroupStruct = exclusiveGroupStructs[index];
-                    _GroupsHashSet.Add(exclusiveGroupStruct);
-                }
-
-                GroupCompoundInitializer.skipStaticCompoundConstructorsWith4Tags.Value = true;
-
-                //all the permutations must share the same group and group hashset. Warm them up, avoid call the 
-                //constructors again, set the desired value
-                GroupCompound<G1, G2, G4, G3>._Groups = _Groups;
-                GroupCompound<G1, G3, G2, G4>._Groups = _Groups;
-                GroupCompound<G1, G3, G4, G2>._Groups = _Groups;
-                GroupCompound<G1, G4, G2, G3>._Groups = _Groups;
-                GroupCompound<G2, G1, G3, G4>._Groups = _Groups;
-                GroupCompound<G2, G3, G4, G1>._Groups = _Groups;
-                GroupCompound<G3, G1, G2, G4>._Groups = _Groups;
-                GroupCompound<G4, G1, G2, G3>._Groups = _Groups;
-                GroupCompound<G1, G4, G3, G2>._Groups = _Groups;
-                GroupCompound<G2, G1, G4, G3>._Groups = _Groups;
-                GroupCompound<G2, G4, G3, G1>._Groups = _Groups;
-                GroupCompound<G3, G1, G4, G2>._Groups = _Groups;
-                GroupCompound<G4, G1, G3, G2>._Groups = _Groups;
-                GroupCompound<G2, G3, G1, G4>._Groups = _Groups;
-                GroupCompound<G3, G4, G1, G2>._Groups = _Groups;
-                GroupCompound<G2, G4, G1, G3>._Groups = _Groups;
-                GroupCompound<G3, G2, G1, G4>._Groups = _Groups;
-                GroupCompound<G3, G2, G4, G1>._Groups = _Groups;
-                GroupCompound<G3, G4, G2, G1>._Groups = _Groups;
-                GroupCompound<G4, G2, G1, G3>._Groups = _Groups;
-                GroupCompound<G4, G2, G3, G1>._Groups = _Groups;
-                GroupCompound<G4, G3, G1, G2>._Groups = _Groups;
-                GroupCompound<G4, G3, G2, G1>._Groups = _Groups;
-
-                //all the constructor have been called now
-                GroupCompoundInitializer.skipStaticCompoundConstructorsWith4Tags.Value = false;
-
-                GroupCompound<G1, G2, G4, G3>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G1, G3, G2, G4>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G1, G3, G4, G2>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G1, G4, G2, G3>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G2, G1, G3, G4>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G2, G3, G4, G1>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G3, G1, G2, G4>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G4, G1, G2, G3>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G1, G4, G3, G2>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G2, G1, G4, G3>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G2, G4, G3, G1>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G3, G1, G4, G2>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G4, G1, G3, G2>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G2, G3, G1, G4>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G3, G4, G1, G2>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G2, G4, G1, G3>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G3, G2, G1, G4>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G3, G2, G4, G1>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G3, G4, G2, G1>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G4, G2, G1, G3>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G4, G2, G3, G1>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G4, G3, G1, G2>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G4, G3, G2, G1>._GroupsHashSet = _GroupsHashSet;
-                
-                GroupCompound<G1, G2, G3>.Add(group);
-                GroupCompound<G1, G2, G4>.Add(group);
-                GroupCompound<G1, G3, G4>.Add(group);
-                GroupCompound<G2, G3, G4>.Add(group);
-
-                GroupCompound<G1, G2>.Add(group); //<G1/G2> and <G2/G1> must share the same array
-                GroupCompound<G1, G3>.Add(group);
-                GroupCompound<G1, G4>.Add(group);
-                GroupCompound<G2, G3>.Add(group);
-                GroupCompound<G2, G4>.Add(group);
-                GroupCompound<G3, G4>.Add(group);
-
-                //This is done here to be sure that the group is added once per group tag
-                //(if done inside the previous group compound it would be added multiple times)
-                GroupTag<G1>.Add(group);
-                GroupTag<G2>.Add(group);
-                GroupTag<G3>.Add(group);
-                GroupTag<G4>.Add(group);
-            }
-        }
+        private static readonly GroupCompound _GroupCompoundInstance = GroupCompound.GetOrCreateGroupCompoundByGroupTagTypes(
+            groupTagTypes: new[] { typeof(G1), typeof(G2), typeof(G3), typeof(G4) },
+            buildGroupBitmask: GroupTag<G1>.bitmask | GroupTag<G2>.bitmask | GroupTag<G3>.bitmask | GroupTag<G4>.bitmask);
 
         public static FasterReadOnlyList<ExclusiveGroupStruct> Groups
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => new(_Groups);
+            get => _GroupCompoundInstance.Groups;
         }
 
         public static ExclusiveBuildGroup BuildGroup
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => new(_Groups[0], 1);
+            get => _GroupCompoundInstance.BuildGroup;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -154,102 +188,29 @@ namespace Svelto.ECS
         {
             DBC.ECS.Check.Require(group != ExclusiveGroupStruct.Invalid, "invalid group passed");
 
-            return _GroupsHashSet.Contains(group);
+            return _GroupCompoundInstance.Contains(group);
         }
-
-        internal static void Add(ExclusiveGroupStruct group)
-        {
-#if DEBUG && !PROFILE_SVELTO
-            for (var i = 0; i < _Groups.count; ++i)
-                if (_Groups[i] == group)
-                    throw new System.Exception("this test must be transformed in unit test");
-#endif
-
-            _Groups.Add(group);
-            _GroupsHashSet.Add(group);
-        }
-
-        static readonly FasterList<ExclusiveGroupStruct> _Groups;
-        static readonly HashSet<ExclusiveGroupStruct> _GroupsHashSet;
-
-        //we are changing this with Interlocked, so it cannot be readonly
-        static int isInitialised;
     }
 
-    public abstract class GroupCompound<G1, G2, G3>: ITouchedByReflection
+    public abstract class GroupCompound<G1, G2, G3> : ITouchedByReflection
             where G1 : GroupTag<G1>
             where G2 : GroupTag<G2>
             where G3 : GroupTag<G3>
     {
-        static GroupCompound()
-        {
-            /// c# Static constructors are guaranteed to be thread safe and not called more than once
-            if (Interlocked.CompareExchange(ref isInitializing, 1, 0) != 0)
-                throw new Exception("GroupCompound static constructor called twice - impossible");
-            
-            if (GroupCompoundInitializer.skipStaticCompoundConstructorsWith3Tags.Value == false)
-            {
-                var group = new ExclusiveGroup(GroupTag<G1>.bitmask | GroupTag<G2>.bitmask | GroupTag<G3>.bitmask);
-
-                _Groups = new FasterList<ExclusiveGroupStruct>(1);
-                _Groups.Add(group);
-
-#if DEBUG
-                var name = $"Compound: {typeof(G1).Name}-{typeof(G2).Name}-{typeof(G3).Name} ID {(uint)group.id}";
-                GroupNamesMap.idToName[group] = name;
-#endif
-                //The hashname is independent from the actual group ID. this is fundamental because it is want
-                //guarantees the hash to be the same across different machines
-                GroupHashMap.RegisterGroup(group, typeof(GroupCompound<G1, G2, G3>).FullName);
-
-                var exclusiveGroupStructs = _Groups.ToArrayFast(out var count);
-                _GroupsHashSet = new HashSet<ExclusiveGroupStruct>(count);
-                for (var index = 0; index < count; ++index)
-                {
-                    var exclusiveGroupStruct = exclusiveGroupStructs[index];
-                    _GroupsHashSet.Add(exclusiveGroupStruct);
-                }
-
-                GroupCompoundInitializer.skipStaticCompoundConstructorsWith3Tags.Value = true;
-
-                //all the combinations must share the same group and group hashset
-                GroupCompound<G3, G1, G2>._Groups = _Groups;
-                GroupCompound<G2, G3, G1>._Groups = _Groups;
-                GroupCompound<G3, G2, G1>._Groups = _Groups;
-                GroupCompound<G1, G3, G2>._Groups = _Groups;
-                GroupCompound<G2, G1, G3>._Groups = _Groups;
-
-                //all the constructor have been called now
-                GroupCompoundInitializer.skipStaticCompoundConstructorsWith3Tags.Value = false;
-
-                GroupCompound<G3, G1, G2>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G2, G3, G1>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G3, G2, G1>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G1, G3, G2>._GroupsHashSet = _GroupsHashSet;
-                GroupCompound<G2, G1, G3>._GroupsHashSet = _GroupsHashSet;
-                
-                GroupCompound<G1, G2>.Add(group); //<G1/G2> and <G2/G1> must share the same array
-                GroupCompound<G1, G3>.Add(group);
-                GroupCompound<G2, G3>.Add(group);
-
-                //This is done here to be sure that the group is added once per group tag
-                //(if done inside the previous group compound it would be added multiple times)
-                GroupTag<G1>.Add(group);
-                GroupTag<G2>.Add(group);
-                GroupTag<G3>.Add(group);
-            }
-        }
+        private static readonly GroupCompound _GroupCompoundInstance = GroupCompound.GetOrCreateGroupCompoundByGroupTagTypes(
+            groupTagTypes: new[] { typeof(G1), typeof(G2), typeof(G3) },
+            buildGroupBitmask: GroupTag<G1>.bitmask | GroupTag<G2>.bitmask | GroupTag<G3>.bitmask);
 
         public static FasterReadOnlyList<ExclusiveGroupStruct> Groups
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => new(_Groups);
+            get => _GroupCompoundInstance.Groups;
         }
 
         public static ExclusiveBuildGroup BuildGroup
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => new(_Groups[0], 1);
+            get => _GroupCompoundInstance.BuildGroup;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -257,205 +218,60 @@ namespace Svelto.ECS
         {
             DBC.ECS.Check.Require(group != ExclusiveGroupStruct.Invalid, "invalid group passed");
 
-            return _GroupsHashSet.Contains(group);
+            return _GroupCompoundInstance.Contains(group);
         }
-
-        internal static void Add(ExclusiveGroupStruct group)
-        {
-#if DEBUG && !PROFILE_SVELTO
-            for (var i = 0; i < _Groups.count; ++i)
-                if (_Groups[i] == group)
-                    throw new System.Exception("this test must be transformed in unit test");
-#endif
-
-            _Groups.Add(group);
-            _GroupsHashSet.Add(group);
-        }
-
-        static readonly FasterList<ExclusiveGroupStruct> _Groups;
-        static readonly HashSet<ExclusiveGroupStruct> _GroupsHashSet;
-
-        //we are changing this with Interlocked, so it cannot be readonly
-        static int isInitializing;
     }
 
-    public abstract class GroupCompound<G1, G2>: ITouchedByReflection
-            where G1 : GroupTag<G1>
-            where G2 : GroupTag<G2>
+    public abstract class GroupCompound<G1, G2> : ITouchedByReflection
+        where G1 : GroupTag<G1>
+        where G2 : GroupTag<G2>
     {
-        static GroupCompound()
-        {
-            /// c# Static constructors are guaranteed to be thread safe and not called more than once
-            if (Interlocked.CompareExchange(ref isInitializing, 1, 0) != 0)
-                throw new Exception($"{typeof(GroupCompound<G1, G2>).FullName} GroupCompound static constructor called twice - impossible");
-            
-            if (GroupCompoundInitializer.skipStaticCompoundConstructorsWith2Tags.Value == false)
-            {
-                range = GroupTag<G1>.range > GroupTag<G2>.range ? GroupTag<G1>.range : GroupTag<G2>.range;
-
-                var initialSize = range;
-                _Groups = new FasterList<ExclusiveGroupStruct>(initialSize);
-
-                var group = new ExclusiveGroup(initialSize, GroupTag<G1>.bitmask | GroupTag<G2>.bitmask);
-                
-#if DEBUG
-                for (uint i = 0; i < initialSize; ++i)
-                {
-                    var groupID = group.id + i;
-                    var name = $"Compound: {typeof(G1).Name}-{typeof(G2).Name} ID {groupID}";
-
-                    GroupNamesMap.idToName[group + i] = name;
-                }
-#endif
-
-                for (uint i = 0; i < initialSize; ++i)
-                {
-                    var exclusiveGroupStruct = group + i;
-                    
-                    //The hashname is independent from the actual group ID. this is fundamental because it is want
-                    //guarantees the hash to be the same across different machines
-                    GroupHashMap.RegisterGroup(exclusiveGroupStruct, typeof(GroupCompound<G1, G2>).FullName + i);
-                    
-                    _Groups.Add(exclusiveGroupStruct);
-                    //every abstract group preemptively adds this group, it may or may not be empty in future
-                    GroupTag<G1>.Add(exclusiveGroupStruct);
-                    GroupTag<G2>.Add(exclusiveGroupStruct);
-                }
-                
-                var exclusiveGroupStructs = _Groups.ToArrayFast(out var count);
-                _GroupsHashSet = new HashSet<ExclusiveGroupStruct>(count);
-                for (var index = 0; index < count; index++)
-                {
-                    var exclusiveGroupStruct = exclusiveGroupStructs[index];
-                    _GroupsHashSet.Add(exclusiveGroupStruct);
-                }
-
-                GroupCompoundInitializer.skipStaticCompoundConstructorsWith2Tags.Value = true;
-                GroupCompound<G2, G1>._Groups = _Groups;
-                //all the constructor have been called now
-                GroupCompoundInitializer.skipStaticCompoundConstructorsWith2Tags.Value = false;
-                
-                GroupCompound<G2, G1>.range = initialSize;
-                GroupCompound<G2, G1>._GroupsHashSet = _GroupsHashSet;
-            }
-        }
+        private static readonly GroupCompound _GroupCompoundInstance = GroupCompound.GetOrCreateGroupCompoundByGroupTagTypes(
+            groupTagTypes: new[] { typeof(G1), typeof(G2) },
+            buildGroupBitmask: GroupTag<G1>.bitmask | GroupTag<G2>.bitmask);
 
         public static FasterReadOnlyList<ExclusiveGroupStruct> Groups
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => new(_Groups);
+            get => _GroupCompoundInstance.Groups;
         }
 
         public static ExclusiveBuildGroup BuildGroup
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => new(_Groups[0], range);
+            get => _GroupCompoundInstance.BuildGroup;
         }
 
-        //TODO there is an overlap between this method and ExclusiveGroupExtensions FoundIn
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool Includes(ExclusiveGroupStruct group)
         {
             DBC.ECS.Check.Require(group != ExclusiveGroupStruct.Invalid, "invalid group passed");
 
-            return _GroupsHashSet.Contains(group);
+            return _GroupCompoundInstance.Contains(group);
         }
-
-        internal static void Add(ExclusiveGroupStruct group)
-        {
-#if DEBUG && !PROFILE_SVELTO
-            for (var i = 0; i < _Groups.count; ++i)
-                if (_Groups[i] == group)
-                    throw new System.Exception("this test must be transformed in unit test");
-#endif
-
-            _Groups.Add(group);
-            _GroupsHashSet.Add(group);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static uint Offset(ExclusiveGroupStruct group)
-        {
-            return BuildGroup.Offset(group);
-        }
-
-        static readonly FasterList<ExclusiveGroupStruct> _Groups;
-        static readonly HashSet<ExclusiveGroupStruct> _GroupsHashSet;
-
-        static ushort range;
-
-        static int isInitializing;
     }
 
     /// <summary>
-    ///     A Group Tag holds initially just a group, itself. However the number of groups can grow with the number of
-    ///     combinations of GroupTags including this one. This because a GroupTag is an adjective and different entities
-    ///     can use the same adjective together with other ones. Albeit since I need to be able to iterate over all the
-    ///     groups with the same adjective, a group tag needs to hold all the group compounds using it.
+    /// GroupTags are just GroupCompounds with a single type associated
     /// </summary>
     /// <typeparam name="T"></typeparam>
-    public abstract class GroupTag<T>: ITouchedByReflection where T : GroupTag<T>
+    public abstract class GroupTag<T> : ITouchedByReflection
+        where T : GroupTag<T>
     {
-        static GroupTag()
-        {
-            if (Interlocked.CompareExchange(ref isInitializing, 1, 0) != 0)
-                throw new Exception("GroupTag static constructor called twice - impossible");
-            
-            //GroupTag can set values for ranges and bitmasks in their static constructors so they must be called first
-            //there is no other way around this, as the base static constructor will be called once base fields are touched
-            //RuntimeHelpers.RunClassConstructor(typeof(T).TypeHandle);
-            typeof(T).TypeInitializer?.Invoke(null, null); //must use this because if a specialised GroupTag is called first will call the this constructor before having the chance to initialise the protected values. This will force to initialise the values no matter what (and won't call the base constructor again because already executing)
-            
-            var initialRange = range; //range may be overriden by the constructor previously called
-
-            if (initialRange == 0) //means never initialised by a inherited static constructor
-            {
-                initialRange = 1;
-                range = 1;
-            }
-
-            var group = new ExclusiveGroup(initialRange, bitmask);
-            for (uint i = 0; i < initialRange; ++i)
-            {
-                _Groups.Add(group + i);
-                //The hashname is independent from the actual group ID. this is fundamental because it is want
-                //guarantees the hash to be the same across different machines
-                GroupHashMap.RegisterGroup(group + i, typeof(GroupTag<T>).FullName + i);
-            }
-#if DEBUG
-            var typeInfo = typeof(T);
-            for (uint i = 0; i < initialRange; ++i)
-            {
-                var groupID = group.id + i;
-                var name = $"Compound: {typeInfo.Name} ID {groupID}";
-
-                var typeInfoBaseType = typeInfo.BaseType;
-                //todo: this should shield from using a pattern different than public class GROUP_NAME : GroupTag<GROUP_NAME> {} however I am not sure it's working
-                if (typeInfoBaseType.GenericTypeArguments[0] != typeInfo)
-                    throw new ECSException("Invalid Group Tag declared");
-
-                GroupNamesMap.idToName[group + i] = name;
-            }
-#endif
-            var exclusiveGroupStructs = _Groups.ToArrayFast(out var count);
-            _GroupsHashSet = new HashSet<ExclusiveGroupStruct>(count);
-            for (var index = 0; index < count; index++)
-            {
-                var exclusiveGroupStruct = exclusiveGroupStructs[index];
-                _GroupsHashSet.Add(exclusiveGroupStruct);
-            }
-        }
+        private static readonly GroupCompound _GroupCompoundInstance = GroupCompound.GetOrCreateGroupCompoundByGroupTagTypes(
+            groupTagTypes: new[] { typeof(T) },
+            buildGroupBitmask: bitmask);
 
         public static FasterReadOnlyList<ExclusiveGroupStruct> Groups
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => new(_Groups);
+            get => _GroupCompoundInstance.Groups;
         }
 
         public static ExclusiveBuildGroup BuildGroup
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => new(_Groups[0], range);
+            get => _GroupCompoundInstance.BuildGroup;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -463,20 +279,7 @@ namespace Svelto.ECS
         {
             DBC.ECS.Check.Require(group != ExclusiveGroupStruct.Invalid, "invalid group passed");
 
-            return _GroupsHashSet.Contains(group);
-        }
-
-        //Each time a new combination of group tags is found a new group is added.
-        internal static void Add(ExclusiveGroupStruct group)
-        {
-#if DEBUG && !PROFILE_SVELTO
-            for (var i = 0; i < _Groups.count; ++i)
-                if (_Groups[i] == group)
-                    throw new System.Exception("this test must be transformed in unit test");
-#endif
-
-            _Groups.Add(group);
-            _GroupsHashSet.Add(group);
+            return _GroupCompoundInstance.Contains(group);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -484,34 +287,28 @@ namespace Svelto.ECS
         {
             return BuildGroup.Offset(group);
         }
-
-        static readonly FasterList<ExclusiveGroupStruct> _Groups = new FasterList<ExclusiveGroupStruct>(1);
-        static readonly HashSet<ExclusiveGroupStruct> _GroupsHashSet;
-
-        //we are changing this with Interlocked, so it cannot be readonly
-        static int isInitializing;
 
         //special group attributes, at the moment of writing this comment, only the disabled group has a special attribute
 
         //Allow to call GroupTag static constructors like
-//                public class Dead: GroupTag<Dead>
-//                {
-//                    static Dead()
-//                    {
-//                        bitmask = ExclusiveGroupBitmask.DISABLED_BIT;
-//                    }
-//                };
+        //                public class Dead: GroupTag<Dead>
+        //                {
+        //                    static Dead()
+        //                    {
+        //                        bitmask = ExclusiveGroupBitmask.DISABLED_BIT;
+        //                    }
+        //                };
 
         protected internal static ExclusiveGroupBitmask bitmask;
         //set a number different than 0 to create a range of groups instead of a single group
         //example of usage:
-//        public class VehicleGroup:GroupTag<VehicleGroup>
-//        {
-//            static VehicleGroup()
-//            {
-//                range = (ushort)Data.MaxTeamCount;
-//            }
-//        }
+        //        public class VehicleGroup:GroupTag<VehicleGroup>
+        //        {
+        //            static VehicleGroup()
+        //            {
+        //                range = (ushort)Data.MaxTeamCount;
+        //            }
+        //        }
 
         protected internal static ushort range;
     }
