@@ -29,7 +29,7 @@ namespace Svelto.ECS
             get => new(this._Groups[0], 1);
         }
 
-        private GroupCompound(int id, string name, Type[] groupTagTypes, ExclusiveGroupBitmask buildGroupBitmask)
+        private GroupCompound(int id, string name, Type[] groupTagTypes, ExclusiveGroupBitmask buildGroupBitmask, ushort? buildGroupRange)
         {
             this._Id = id;
             this._Name = name;
@@ -37,7 +37,7 @@ namespace Svelto.ECS
             this._Groups = new FasterList<ExclusiveGroupStruct>(1);
             this._GroupsHashSet = new HashSet<ExclusiveGroupStruct>();
 
-            var group = new ExclusiveGroup(buildGroupBitmask);
+            var group = buildGroupRange.HasValue ? new ExclusiveGroup(buildGroupRange.Value, buildGroupBitmask) : new ExclusiveGroup(buildGroupBitmask);
             this.Add(group);
             this.PopulateExistingGroups();
 
@@ -118,7 +118,7 @@ namespace Svelto.ECS
         }
 
         private static readonly ConcurrentDictionary<int, GroupCompound> _GroupCompounds = new ConcurrentDictionary<int, GroupCompound>();
-        internal static GroupCompound GetOrCreateGroupCompoundByGroupTagTypes(Type[] groupTagTypes, ExclusiveGroupBitmask buildGroupBitmask)
+        internal static GroupCompound GetOrCreateGroupCompoundByGroupTagTypes(Type[] groupTagTypes, ExclusiveGroupBitmask buildGroupBitmask, ushort? buildGroupRange = null)
         {
             // Sort the tag types
             Type[] groupTagTypesSorted = groupTagTypes.OrderBy(x => x.AssemblyQualifiedName).ThenBy(x => x.GetHashCode()).ToArray();
@@ -137,7 +137,7 @@ namespace Svelto.ECS
 
             // Need to create and store a new instance
             string name = groupTagTypesSorted.Select((x, _) => x.FullName).Aggregate((s1, s2) => $"{s1}-{s2}");
-            groupCompound = new GroupCompound(id, name, groupTagTypesSorted, buildGroupBitmask);
+            groupCompound = new GroupCompound(id, name, groupTagTypesSorted, buildGroupBitmask, buildGroupRange);
             _GroupCompounds.TryAdd(id, groupCompound);
 
             return groupCompound;
@@ -243,7 +243,8 @@ namespace Svelto.ECS
     {
         private static readonly GroupCompound _GroupCompoundInstance = GroupCompound.GetOrCreateGroupCompoundByGroupTagTypes(
             groupTagTypes: new[] { typeof(T) },
-            buildGroupBitmask: bitmask);
+            buildGroupBitmask: bitmask,
+            buildGroupRange: range);
 
         public static FasterReadOnlyList<ExclusiveGroupStruct> Groups
         {
