@@ -5,9 +5,10 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
 
-namespace Svelto.ECS
+namespace Svelto.ECS.Core.Groups
 {
-    interface ITouchedByReflection { }
+    internal interface ITouchedByReflection
+    { }
 
     internal sealed class GroupCompound
     {
@@ -20,36 +21,36 @@ namespace Svelto.ECS
         public FasterReadOnlyList<ExclusiveGroupStruct> Groups
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => new(this._Groups);
+            get => new(_Groups);
         }
 
         public ExclusiveBuildGroup BuildGroup
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => new(this._Groups[0], 1);
+            get => new(_Groups[0], 1);
         }
 
         private GroupCompound(int id, string name, Type[] groupTagTypes, ExclusiveGroupBitmask buildGroupBitmask, ushort? buildGroupRange)
         {
-            this._Id = id;
-            this._Name = name;
-            this._GroupTagTypes = groupTagTypes;
-            this._Groups = new FasterList<ExclusiveGroupStruct>(1);
-            this._GroupsHashSet = new HashSet<ExclusiveGroupStruct>();
+            _Id = id;
+            _Name = name;
+            _GroupTagTypes = groupTagTypes;
+            _Groups = new FasterList<ExclusiveGroupStruct>(1);
+            _GroupsHashSet = new HashSet<ExclusiveGroupStruct>();
 
             var group = buildGroupRange.HasValue ? new ExclusiveGroup(buildGroupRange.Value, buildGroupBitmask) : new ExclusiveGroup(buildGroupBitmask);
-            this.Add(group);
-            this.PopulateExistingGroups();
+            Add(group);
+            PopulateExistingGroups();
 
 #if DEBUG
             var groupName =
-                    $"Compound: {this._Name} ID {group.id}";
+                    $"Compound: {_Name} ID {group.id}";
             GroupNamesMap.idToName[group] = groupName;
 #endif
 
             //The hashname is independent from the actual group ID. this is fundamental because it is want
             //guarantees the hash to be the same across different machines
-            GroupHashMap.RegisterGroup(group, this._Name);
+            GroupHashMap.RegisterGroup(group, _Name);
         }
 
         internal void Add(ExclusiveGroupStruct group)
@@ -57,16 +58,16 @@ namespace Svelto.ECS
 #if DEBUG && !PROFILE_SVELTO
             for (var i = 0; i < _Groups.count; ++i)
                 if (_Groups[i] == group)
-                    throw new System.Exception("this test must be transformed in unit test");
+                    throw new Exception("this test must be transformed in unit test");
 #endif
 
-            this._Groups.Add(group);
-            this._GroupsHashSet.Add(group);
+            _Groups.Add(group);
+            _GroupsHashSet.Add(group);
         }
 
         internal bool Contains(ExclusiveGroupStruct group)
         {
-            return this._GroupsHashSet.Contains(group);
+            return _GroupsHashSet.Contains(group);
         }
 
         private void PopulateExistingGroups()
@@ -83,32 +84,32 @@ namespace Svelto.ECS
                     continue;
                 }
 
-                if (this.ContainsGroupTagTypes(existingGroupCompound._GroupTagTypes) == true)
+                if (ContainsGroupTagTypes(existingGroupCompound._GroupTagTypes) == true)
                 { // If all GroupTags within the existingGroupCompound exist in the current groupCompound...
                   // This selects GroupCompound<XYZ> when creating GroupCompound<ABC, XYZ> but not the other way around
                   // We want to add the new group into the existing groupCompound
-                    existingGroupCompound.Add(this.BuildGroup);
+                    existingGroupCompound.Add(BuildGroup);
                 }
 
-                if (existingGroupCompound.ContainsGroupTagTypes(this._GroupTagTypes) == true)
+                if (existingGroupCompound.ContainsGroupTagTypes(_GroupTagTypes) == true)
                 { // If all GroupTags within the current groupCompount exist in the existingGroupCompound...
                   // This selects GroupCompound<ABC, XYZ> when creating GroupCompound<XYZ> but not the other way around
                   // We want to add the existing group into the current groupCompound
-                    this.Add(existingGroupCompound.BuildGroup);
+                    Add(existingGroupCompound.BuildGroup);
                 }
             }
         }
 
         private bool ContainsGroupTagTypes(params Type[] groupTagTypes)
         {
-            if (groupTagTypes.Length > this._GroupTagTypes.Length)
+            if (groupTagTypes.Length > _GroupTagTypes.Length)
             {
                 return false;
             }
 
             foreach (Type groupTagType in groupTagTypes)
             {
-                if (this._GroupTagTypes.Contains(groupTagType) == false)
+                if (_GroupTagTypes.Contains(groupTagType) == false)
                 {
                     return false;
                 }
@@ -234,11 +235,12 @@ namespace Svelto.ECS
         }
     }
 
+    public interface IGroupTag { }
     /// <summary>
     /// GroupTags are just GroupCompounds with a single type associated
     /// </summary>
     /// <typeparam name="T"></typeparam>
-    public abstract class GroupTag<T> : ITouchedByReflection
+    public abstract class GroupTag<T> : ITouchedByReflection, IGroupTag
         where T : GroupTag<T>
     {
         private static readonly GroupCompound _GroupCompoundInstance = GroupCompound.GetOrCreateGroupCompoundByGroupTagTypes(

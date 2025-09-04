@@ -1,7 +1,8 @@
 ﻿﻿using System.Runtime.InteropServices;
  using NUnit.Framework;
 using Svelto.DataStructures;
- using Svelto.ECS.Hybrid;
+using Svelto.ECS.Core;
+using Svelto.ECS.Hybrid;
 using Svelto.ECS.Schedulers;
 using Svelto.ECS.Serialization;
 

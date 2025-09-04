@@ -4,6 +4,7 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
+using Svelto.ECS.Core.Groups;
 using Svelto.ECS.Serialization;
 
 namespace Svelto.ECS

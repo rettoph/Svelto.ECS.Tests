@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using Svelto.Common;
+using Svelto.ECS.Core;
 
 namespace Svelto.ECS
 {

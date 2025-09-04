@@ -3,6 +3,7 @@ using System.ComponentModel;
 using DBC.ECS;
 using NUnit.Framework;
 using Svelto.DataStructures;
+using Svelto.ECS.Core;
 using Svelto.ECS.Hybrid;
 using Svelto.ECS.Internal;
 using Svelto.ECS.Schedulers;

@@ -1,4 +1,6 @@
-﻿namespace Svelto.ECS.Tests.ECS;
+﻿using Svelto.ECS.Core;
+
+namespace Svelto.ECS.Tests.ECS;
 
 public class MegaReactEngineCallback : IReactOnAddEx<TestEntityViewComponent>,
         IReactOnRemoveEx<TestEntityViewComponent>, IReactOnSwapEx<TestEntityViewComponent>

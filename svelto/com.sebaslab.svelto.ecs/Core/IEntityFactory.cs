@@ -1,6 +1,7 @@
+using Svelto.ECS.Core.Groups;
 using System.Collections.Generic;
 
-namespace Svelto.ECS
+namespace Svelto.ECS.Core
 {
     /// <summary>
     /// Entities are always built in group. Where the group is not specificed, a special standard group is used
@@ -50,6 +51,10 @@ namespace Svelto.ECS
 
         EntityInitializer BuildEntity<T>(EGID egid, T entityDescriptor, IEnumerable<object> implementors = null,
             [System.Runtime.CompilerServices.CallerMemberName] string caller = null) where T : IEntityDescriptor;
+
+        EntityInitializer BuildEntity<TDescriptor, TGroup>(uint entityID,
+            IEnumerable<object> implementors = null,
+            [System.Runtime.CompilerServices.CallerMemberName] string caller = null) where TDescriptor : IEntityDescriptor, new() where TGroup : IEntityGroup<TDescriptor>;
 
 #if UNITY_NATIVE
         Svelto.ECS.Native.NativeEntityFactory ToNative<T>([System.Runtime.CompilerServices.CallerMemberName] string callerName

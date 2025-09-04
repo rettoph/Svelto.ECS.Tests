@@ -1,4 +1,5 @@
 using NUnit.Framework;
+using Svelto.ECS.Core;
 using Svelto.ECS.Schedulers;
 
 namespace Svelto.ECS.Tests.Messy

@@ -1,5 +1,6 @@
 ﻿using NUnit.Framework;
 using Svelto.Common;
+using Svelto.ECS.Core;
 using Svelto.ECS.Native;
 using Svelto.ECS.Schedulers;
 

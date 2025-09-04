@@ -1,3 +1,5 @@
+using Svelto.ECS.Core.Groups;
+
 namespace Svelto.ECS.Tests
 {
     static class Groups

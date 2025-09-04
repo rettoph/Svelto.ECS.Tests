@@ -1,5 +1,7 @@
 ﻿using NUnit.Framework;
 using Svelto.DataStructures;
+using Svelto.ECS.Core;
+using Svelto.ECS.Core.Groups;
 using Svelto.ECS.Internal;
 using Svelto.ECS.Schedulers;
 

@@ -1,6 +1,7 @@
 ﻿using System;
 using Svelto.Common;
 using Svelto.DataStructures;
+using Svelto.ECS.Core.Groups;
 
 namespace Svelto.ECS
 {

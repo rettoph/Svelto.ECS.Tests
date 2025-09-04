@@ -1,6 +1,7 @@
 using NUnit.Framework;
+using Svelto.ECS.Core.Groups;
 
-namespace Svelto.ECS.Tests.GroupCompounds
+namespace Svelto.ECS.Tests.ECS.MessyTests.GroupCompoundTests
 {
     [TestFixture]
     public class GroupCompoundTest1

@@ -1,4 +1,5 @@
 using Svelto.Common;
+using Svelto.ECS.Core;
 
 namespace Svelto.ECS.Serialization
 {
